@@ -8,12 +8,12 @@
 #include <fstream>  
 #include <atomic>   
 #include <chrono>   
-#include <queue>
+#include <queue> 
 #include "scanner.h"
 
 void print_usage(const char* prog_name) {
-    std::cout << "Usage: " << prog_name << " <IP_or_CIDR> <Start_Port> <End_Port> [Timeout_Sec]\n";
-    std::cout << "Example: " << prog_name << " 192.168.1.0/24 80 100 1\n";
+    std::cout << "Usage: " << prog_name << " <IP_or_CIDR> <Start_Port> <End_Port> [Timeout_Sec] [tcp/udp]\n";
+    std::cout << "Example: " << prog_name << " 127.0.0.1 53 80 1 udp\n";
 }
 
 void print_progress_bar(std::atomic<int>& progress, int total) {
@@ -38,16 +38,16 @@ void print_progress_bar(std::atomic<int>& progress, int total) {
 
 void save_json_report(const std::string& filename, const std::string& target, const std::vector<PortResult>& results) {
     std::ofstream file(filename);
-    if (!file.is_open()) {
-        std::clog << "[!] Error: Could not create report file.\n";
-        return;
-    }
+    if (!file.is_open()) return;
     file << "{\n  \"target_input\": \"" << target << "\",\n  \"open_ports\": [\n";
     for (size_t i = 0; i < results.size(); ++i) {
         file << "    {\n";
         file << "      \"ip\": \"" << results[i].ip << "\",\n";
         file << "      \"port\": " << results[i].port << ",\n";
+        file << "      \"protocol\": \"" << results[i].protocol << "\",\n";
         file << "      \"status\": \"open\",\n";
+        file << "      \"os_guess\": \"" << results[i].os_guess << "\",\n";
+        
         std::string clean_banner = results[i].banner;
         size_t pos = 0;
         while ((pos = clean_banner.find("\"", pos)) != std::string::npos) {
@@ -68,6 +68,7 @@ int main(int argc, char* argv[]) {
     int start_port = 8080;
     int end_port = 8085; 
     int timeout_sec = 1;
+    std::string mode = "tcp";
 
     if (argc > 1) {
         std::string first_arg = argv[1];
@@ -83,7 +84,13 @@ int main(int argc, char* argv[]) {
         target_input = argv[1];
         start_port = std::atoi(argv[2]);
         end_port = std::atoi(argv[3]);
+        
         if (argc >= 5) timeout_sec = std::atoi(argv[4]);
+        if (argc >= 6) {
+            std::string proto_arg = argv[5];
+            std::transform(proto_arg.begin(), proto_arg.end(), proto_arg.begin(), ::tolower);
+            if (proto_arg == "udp") mode = "udp";
+        }
     }
 
     if (start_port < 1 || end_port > 65535 || start_port > end_port) {
@@ -92,15 +99,12 @@ int main(int argc, char* argv[]) {
     }
 
     std::vector<std::string> target_ips = parse_cidr(target_input);
-    if (target_ips.empty()) {
-        std::clog << "[!] Error: No valid IP addresses found to scan.\n";
-        return 1;
-    }
+    if (target_ips.empty()) return 1;
 
     std::queue<ScanTask> task_queue;
     for (const auto& ip : target_ips) {
         for (int port = start_port; port <= end_port; ++port) {
-            task_queue.push({ip, port});
+            task_queue.push({ip, port, mode});
         }
     }
     int total_tasks = task_queue.size();
@@ -108,11 +112,11 @@ int main(int argc, char* argv[]) {
     unsigned int num_threads = std::thread::hardware_concurrency();
     if (num_threads == 0) num_threads = 4;
 
-    std::cout << "[*] Starting NetScout Highload Scanner (Thread Pool)..." << std::endl;
-    std::cout << "[*] Target Input: " << target_input << " (" << target_ips.size() << " IPs)" << std::endl;
-    std::cout << "[*] Ports range: " << start_port << " - " << end_port << std::endl;
-    std::cout << "[*] Total tasks in queue: " << total_tasks << std::endl;
-    std::cout << "[*] Threads pool size: " << num_threads << std::endl;
+    std::cout << "[*] Starting NetScout Scanner..." << std::endl;
+    std::cout << "[*] Target: " << target_input << " (" << target_ips.size() << " IPs)" << std::endl;
+    std::cout << "[*] Mode: " << (mode == "udp" ? "UDP (Connectionless)" : "TCP (Stateful)") << std::endl;
+    std::cout << "[*] Ports: " << start_port << " - " << end_port << std::endl;
+    std::cout << "[*] Pool Size: " << num_threads << " threads" << std::endl;
     std::cout << "==================================================" << std::endl;
 
     std::vector<PortResult> open_ports;
@@ -147,8 +151,8 @@ int main(int argc, char* argv[]) {
     } else {
         std::cout << "[+] Found " << open_ports.size() << " open ports:" << std::endl;
         for (const auto& res : open_ports) {
-            std::cout << "  -> [" << res.ip << "] Port " << res.port << "/TCP is OPEN";
-            if (!res.banner.empty()) std::cout << " | Banner: " << res.banner;
+            std::cout << "  -> [" << res.ip << "] Port " << res.port << "/" << res.protocol << " is OPEN";
+            if (!res.banner.empty()) std::cout << " | " << res.banner;
             std::cout << std::endl;
         }
     }
