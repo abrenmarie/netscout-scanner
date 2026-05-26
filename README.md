@@ -61,10 +61,25 @@ make clean && make
 }
 ```
 
-## Roadmap
+## Project Roadmap
 
-* [x] Highload Thread Pool engine
-* [x] Subnet CIDR parsing logic
-* [x] TTL OS Fingerprinting
-* [x] Low-level UDP scanning implementation
-* [x] Distributed REST API & Web Dashboard integration using Go (Golang)
+Here is my strategic vision for building a high-performance network analysis ecosystem.
+
+### ✅ Completed Milestones
+
+- [x] **Highload Thread Pool engine**: Optimized parallel execution core.
+- [x] **Subnet CIDR parsing logic**: Advanced network targeting capabilities.
+- [x] **TTL OS Fingerprinting**: Intelligent analysis of network responses.
+- [x] **Low-level UDP scanning implementation**: Full transport layer support.
+- [x] **Distributed REST API**: Scalable Go-based backend integration.
+
+### ⏳ In Progress & Future Vision
+
+- [ ] **Advanced Network Analysis (Fingerprinting)**
+    - Implement banner grabbing for service identification (SSH, HTTP, FTP, etc.).
+- [ ] **Asynchronous Task Management**
+    - Refactor Go API for background task processing.
+    - Implement status polling for long-running scan operations.
+- [ ] **Modern Web Dashboard**
+    - Build a responsive interface with dynamic data visualization.
+    - Add real-time progress tracking and port status indicators.

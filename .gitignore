@@ -6,3 +6,5 @@ web-api/netscout-api  # Если вдруг появится скомпилир�
 .vscode/
 .DS_Store
 report.json
+env
+.env

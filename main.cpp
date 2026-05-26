@@ -70,6 +70,8 @@ int main(int argc, char* argv[]) {
     int timeout_sec = 1;
     std::string mode = "tcp";
 
+    
+
     if (argc > 1) {
         std::string first_arg = argv[1];
         if (first_arg == "-h" || first_arg == "--help") {
