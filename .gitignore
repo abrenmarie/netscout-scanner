@@ -1,7 +1,7 @@
 netscout
 *.o
 *.dSYM/
-web-api/netscout-api  # Если вдруг появится скомпилированный файл
+web-api/netscout-api
 *.exe
 .vscode/
 .DS_Store

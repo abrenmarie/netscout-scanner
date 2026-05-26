@@ -31,9 +31,9 @@
             const results = document.getElementById('results');
             
             if (data.open_ports && data.open_ports.length > 0) {
-                results.innerHTML = `<p class="success">Открыты порты: ${data.open_ports.join(', ')}</p>`;
+                results.innerHTML = `<p class="success">Open ports found: ${data.open_ports.join(', ')}</p>`;
             } else {
-                results.innerHTML = `<p class="error">Открытых портов не найдено.</p>`;
+                results.innerHTML = `<p class="error">No open ports found.</p>`;
             }
         }
     </script>
