@@ -66,5 +66,5 @@ make clean && make
 * [x] Highload Thread Pool engine
 * [x] Subnet CIDR parsing logic
 * [x] TTL OS Fingerprinting
-* [х] Low-level UDP scanning implementation
-* [ ] Distributed REST API & Web Dashboard integration using Go (Golang)
+* [x] Low-level UDP scanning implementation
+* [x] Distributed REST API & Web Dashboard integration using Go (Golang)
