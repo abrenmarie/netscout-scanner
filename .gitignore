@@ -1,0 +1,6 @@
+netscout
+*.o
+*.dSYM/
+.vscode/
+.DS_Store
+report.json
