@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>NetScout Scanner</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        .success { color: green; font-weight: bold; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>NetScout Scanner</h1>
+    <input id="ip" value="127.0.0.1">
+    <input id="start" placeholder="Start">
+    <input id="end" placeholder="End">
+    <button onclick="runScan()">Scan!</button>
+    <div id="results"></div>
+
+    <script>
+        async function runScan() {
+            const res = await fetch('/scan', {
+                method: 'POST',
+                body: JSON.stringify({
+                    ip: document.getElementById('ip').value,
+                    start: parseInt(document.getElementById('start').value),
+                    end: parseInt(document.getElementById('end').value),
+                    protocol: "tcp"
+                })
+            });
+            const data = await res.json();
+            const results = document.getElementById('results');
+            
+            if (data.open_ports && data.open_ports.length > 0) {
+                results.innerHTML = `<p class="success">Открыты порты: ${data.open_ports.join(', ')}</p>`;
+            } else {
+                results.innerHTML = `<p class="error">Открытых портов не найдено.</p>`;
+            }
+        }
+    </script>
+</body>
+</html>

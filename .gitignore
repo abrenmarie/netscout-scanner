@@ -1,6 +1,8 @@
 netscout
 *.o
 *.dSYM/
+web-api/netscout-api  # Если вдруг появится скомпилированный файл
+*.exe
 .vscode/
 .DS_Store
 report.json

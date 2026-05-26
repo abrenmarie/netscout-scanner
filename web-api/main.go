@@ -28,16 +28,20 @@ func scanHandler(w http.ResponseWriter, r *http.Request) {
 
 	cmd := exec.Command("../netscout", req.IP, fmt.Sprint(req.Start), fmt.Sprint(req.End), "1", req.Protocol)
 	
-	if err := cmd.Run(); err != nil {
-		http.Error(w, "Scan failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	err := cmd.Run()
+    if err != nil {
+        fmt.Println("Command execution failed:", err) 
+        http.Error(w, "Scan failed", http.StatusInternalServerError)
+        return
+    }
 
 	http.ServeFile(w, r, "../report.json")
 }
 
 func main() {
-	http.HandleFunc("/scan", scanHandler)
-	fmt.Println("Server started at :8080")
-	http.ListenAndServe(":8080", nil)
+    http.Handle("/", http.FileServer(http.Dir("./static")))
+    
+    http.HandleFunc("/scan", scanHandler)
+    fmt.Println("Server started at http://localhost:8080")
+    http.ListenAndServe(":8080", nil)
 }
