@@ -1,17 +1,20 @@
-FROM alpine:latest AS builder
+FROM alpine:3.20 AS builder
 
 RUN apk add --no-cache g++ make musl-dev
 
-WORKDIR /app
-
+WORKDIR /src
 COPY main.cpp scanner.cpp scanner.h Makefile ./
+RUN make clean all
 
-RUN make
+FROM alpine:3.20
 
-FROM alpine:latest
+RUN apk add --no-cache libstdc++ \
+    && adduser -D -u 10001 scanner \
+    && mkdir -p /app \
+    && chown scanner:scanner /app
 
 WORKDIR /app
+COPY --from=builder /src/netscout /usr/local/bin/netscout
 
-COPY --from=builder /app/netscout .
-
-CMD ["./netscout"]
+USER scanner
+ENTRYPOINT ["/usr/local/bin/netscout"]

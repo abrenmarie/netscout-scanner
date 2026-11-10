@@ -1,167 +1,374 @@
-#include <iostream>
-#include <vector>
-#include <thread>
-#include <mutex>
-#include <algorithm>
-#include <string>
-#include <cstdlib> 
-#include <fstream>  
-#include <atomic>   
-#include <chrono>   
-#include <queue> 
 #include "scanner.h"
 
-void print_usage(const char* prog_name) {
-    std::cout << "Usage: " << prog_name << " <IP_or_CIDR> <Start_Port> <End_Port> [Timeout_Sec] [tcp/udp]\n";
-    std::cout << "Example: " << prog_name << " 127.0.0.1 53 80 1 udp\n";
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cctype>
+#include <cstdlib>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <new>
+#include <sstream>
+#include <thread>
+#include <system_error>
+#include <vector>
+
+namespace
+{
+    void print_usage(const char *name)
+    {
+        std::cout << "Usage: " << name
+                  << " <IPv4|CIDR> <start_port> <end_port> [timeout_seconds] [tcp|udp] [output.json]\n"
+                  << "Example: " << name << " 127.0.0.1 1 1024 1 tcp report.json\n";
+    }
+
+    std::string json_escape(const std::string &value)
+    {
+        std::ostringstream out;
+        for (unsigned char c : value)
+        {
+            switch (c)
+            {
+            case '"':
+                out << "\\\"";
+                break;
+            case '\\':
+                out << "\\\\";
+                break;
+            case '\b':
+                out << "\\b";
+                break;
+            case '\f':
+                out << "\\f";
+                break;
+            case '\n':
+                out << "\\n";
+                break;
+            case '\r':
+                out << "\\r";
+                break;
+            case '\t':
+                out << "\\t";
+                break;
+            default:
+                if (c < 0x20)
+                {
+                    const char *hex = "0123456789abcdef";
+                    out << "\\u00" << hex[(c >> 4) & 0xf] << hex[c & 0xf];
+                }
+                else
+                    out << static_cast<char>(c);
+            }
+        }
+        return out.str();
+    }
+
+    const char *port_state_name(PortState state)
+    {
+        switch (state)
+        {
+        case PortState::Open:
+            return "open";
+        case PortState::Closed:
+            return "closed";
+        case PortState::Filtered:
+            return "filtered";
+        case PortState::OpenFiltered:
+            return "open|filtered";
+        case PortState::Error:
+            return "error";
+        }
+        return "error";
+    }
+
+    bool save_json_report(const std::string &filename,
+                          const std::string &target,
+                          const std::vector<std::string> &ips,
+                          int start_port,
+                          std::uint32_t port_count,
+                          const std::string &protocol,
+                          const std::vector<ScanOutcome> &results)
+    {
+        if (port_count == 0 ||
+            static_cast<std::uint64_t>(ips.size()) * port_count != results.size())
+            return false;
+
+        size_t open_count = 0;
+        size_t closed_count = 0;
+        size_t filtered_count = 0;
+        size_t open_filtered_count = 0;
+        size_t error_count = 0;
+
+        for (const auto &r : results)
+        {
+            switch (r.state)
+            {
+            case PortState::Open:
+                ++open_count;
+                break;
+            case PortState::Closed:
+                ++closed_count;
+                break;
+            case PortState::Filtered:
+                ++filtered_count;
+                break;
+            case PortState::OpenFiltered:
+                ++open_filtered_count;
+                break;
+            case PortState::Error:
+                ++error_count;
+                break;
+            }
+        }
+
+        std::ofstream file(filename.c_str());
+        if (!file)
+            return false;
+
+        file << "{\n"
+             << "  \"target_input\": \"" << json_escape(target) << "\",\n"
+             << "  \"summary\": {\n"
+             << "    \"total\": " << results.size() << ",\n"
+             << "    \"open\": " << open_count << ",\n"
+             << "    \"closed\": " << closed_count << ",\n"
+             << "    \"filtered\": " << filtered_count << ",\n"
+             << "    \"open_filtered\": " << open_filtered_count << ",\n"
+             << "    \"errors\": " << error_count << "\n"
+             << "  },\n"
+             << "  \"results\": [\n";
+
+        for (size_t i = 0; i < results.size(); ++i)
+        {
+            const ScanOutcome &r = results[i];
+            const size_t ip_index = i / port_count;
+            const int port = start_port + static_cast<int>(i % port_count);
+
+            file << "    {"
+                 << "\"ip\": \"" << json_escape(ips[ip_index]) << "\", "
+                 << "\"port\": " << port << ", "
+                 << "\"protocol\": \"" << json_escape(protocol) << "\", "
+                 << "\"status\": \"" << port_state_name(r.state) << "\", "
+                 << "\"os_guess\": \"unknown\", "
+                 << "\"banner\": \"" << json_escape(r.banner) << "\""
+                 << "}";
+
+            file << (i + 1 == results.size() ? "\n" : ",\n");
+        }
+
+        file << "  ],\n"
+             << "  \"os_fingerprinting\": {"
+             << "\"status\": \"not_available\", "
+             << "\"reason\": \"Remote TTL is not collected; no OS claim is made.\""
+             << "}\n"
+             << "}\n";
+
+        return static_cast<bool>(file);
+    }
 }
 
-void print_progress_bar(std::atomic<int>& progress, int total) {
-    int bar_width = 40;
-    while (progress < total) {
-        float percentage = (float)progress / total;
-        int progress_chars = percentage * bar_width;
+int main(int argc, char *argv[])
+{
+    if (argc == 2 && (std::string(argv[1]) == "-h" ||
+                      std::string(argv[1]) == "--help"))
+    {
+        print_usage(argv[0]);
+        return 0;
+    }
+    if (argc < 4 || argc > 7)
+    {
+        print_usage(argv[0]);
+        return 2;
+    }
 
-        std::cout << "\r[";
-        for (int i = 0; i < bar_width; ++i) {
-            if (i < progress_chars) std::cout << "=";
-            else if (i == progress_chars) std::cout << ">";
-            else std::cout << " ";
+    const std::string target = argv[1];
+    char *end = nullptr;
+    long start = std::strtol(argv[2], &end, 10);
+    if (!end || *end != '\0')
+    {
+        std::cerr << "Invalid start port.\n";
+        return 2;
+    }
+    long finish = std::strtol(argv[3], &end, 10);
+    if (!end || *end != '\0' || start < 1 || finish > 65535 ||
+        start > finish || finish < 1)
+    {
+        std::cerr << "Port range must satisfy 1 <= start <= end <= 65535.\n";
+        return 2;
+    }
+
+    long timeout_seconds = argc >= 5 ? std::strtol(argv[4], &end, 10) : 1;
+    if ((argc >= 5 && (!end || *end != '\0')) ||
+        timeout_seconds < 1 || timeout_seconds > 30)
+    {
+        std::cerr << "Timeout must be between 1 and 30 seconds.\n";
+        return 2;
+    }
+
+    std::string protocol = "tcp";
+    if (argc >= 6)
+    {
+        protocol = argv[5];
+        std::transform(protocol.begin(), protocol.end(), protocol.begin(),
+                       [](unsigned char c)
+                       { return static_cast<char>(std::tolower(c)); });
+    }
+    if (protocol != "tcp" && protocol != "udp")
+    {
+        std::cerr << "Protocol must be tcp or udp.\n";
+        return 2;
+    }
+    const std::string output = argc >= 7 ? argv[6] : "report.json";
+
+    std::string parse_error;
+    std::vector<std::string> ips = parse_cidr(target, &parse_error);
+    if (ips.empty())
+    {
+        std::cerr << "Invalid target: " << parse_error << "\n";
+        return 2;
+    }
+
+    const uint64_t total64 = static_cast<uint64_t>(ips.size()) *
+                             static_cast<uint64_t>(finish - start + 1);
+    if (total64 > 2000000ULL)
+    {
+        std::cerr << "Scan contains more than 2,000,000 tasks; narrow the target or port range.\n";
+        return 2;
+    }
+    const std::uint64_t total = total64;
+    const std::uint32_t port_count =
+        static_cast<std::uint32_t>(finish - start + 1);
+
+    unsigned int workers = std::thread::hardware_concurrency();
+    if (workers == 0)
+        workers = 4;
+    workers = std::max(1U, std::min(workers, 128U));
+    workers = std::min(workers, static_cast<unsigned int>(total));
+
+    std::vector<ScanOutcome> results;
+    try
+    {
+        results.resize(static_cast<std::size_t>(total));
+    }
+    catch (const std::bad_alloc &)
+    {
+        std::cerr << "Insufficient memory for " << total
+                  << " scan results; narrow the target or port range.\n";
+        return 2;
+    }
+
+    std::atomic<std::uint64_t> next_task_index(0);
+    std::atomic<std::uint64_t> progress(0);
+    std::vector<std::thread> pool;
+    pool.reserve(workers);
+    const int timeout_ms = static_cast<int>(timeout_seconds * 1000);
+
+    // if thread creation partially fails, already-started workers can still
+    // drain the entire atomic task index; fail only if none could start
+    for (unsigned int i = 0; i < workers; ++i)
+    {
+        try
+        {
+            pool.emplace_back(
+                pool_worker_thread,
+                std::cref(ips),
+                static_cast<int>(start),
+                port_count,
+                std::cref(protocol),
+                total,
+                std::ref(next_task_index),
+                timeout_ms,
+                std::ref(results),
+                std::ref(progress));
         }
-        std::cout << "] " << int(percentage * 100.0) << "% (" << progress << "/" << total << ")" << std::flush;
+        catch (const std::system_error &e)
+        {
+            std::cerr << "[!] Could not start another worker: "
+                      << e.what() << "\n";
+            break;
+        }
+    }
+
+    if (pool.empty())
+    {
+        std::cerr << "[!] Could not start any scanner workers.\n";
+        return 2;
+    }
+
+    std::cout << "[*] NetScout Scanner\n"
+              << "[*] Target: " << target << " (" << ips.size() << " IPv4 addresses)\n"
+              << "[*] Protocol: " << protocol << ", ports: " << start << "-" << finish << "\n"
+              << "[*] Tasks: " << total << ", workers: " << pool.size() << "\n";
+
+    // progress is printed by the main thread; workers never write to stdout
+
+    while (progress.load() < total)
+    {
+        const int done = progress.load();
+        std::cout << "\r[+] Progress: " << done << "/" << total
+                  << " (" << (100LL * done / total) << "%)" << std::flush;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    std::cout << "\r[";
-    for (int i = 0; i < bar_width; ++i) std::cout << "=";
-    std::cout << "] 100% (" << total << "/" << total << ")\n" << std::flush;
-}
+    for (auto &worker : pool)
+        if (worker.joinable())
+            worker.join();
+    std::cout << "\r[+] Progress: " << total << "/" << total << " (100%)\n";
 
-void save_json_report(const std::string& filename, const std::string& target, const std::vector<PortResult>& results) {
-    std::ofstream file(filename);
-    if (!file.is_open()) return;
-    file << "{\n  \"target_input\": \"" << target << "\",\n  \"open_ports\": [\n";
-    for (size_t i = 0; i < results.size(); ++i) {
-        file << "    {\n";
-        file << "      \"ip\": \"" << results[i].ip << "\",\n";
-        file << "      \"port\": " << results[i].port << ",\n";
-        file << "      \"protocol\": \"" << results[i].protocol << "\",\n";
-        file << "      \"status\": \"open\",\n";
-        file << "      \"os_guess\": \"" << results[i].os_guess << "\",\n";
-        
-        std::string clean_banner = results[i].banner;
-        size_t pos = 0;
-        while ((pos = clean_banner.find("\"", pos)) != std::string::npos) {
-            clean_banner.replace(pos, 1, "\\\"");
-            pos += 2;
-        }
-        file << "      \"banner\": \"" << clean_banner << "\"\n";
-        file << "    }";
-        if (i < results.size() - 1) file << ",";
-        file << "\n";
-    }
-    file << "  ]\n}\n";
-    file.close();
-}
+    size_t confirmed_open = 0;
+    size_t closed_count = 0;
+    size_t filtered_count = 0;
+    size_t ambiguous_udp = 0;
+    size_t error_count = 0;
 
-int main(int argc, char* argv[]) {
-    std::string target_input = "127.0.0.1";
-    int start_port = 8080;
-    int end_port = 8085; 
-    int timeout_sec = 1;
-    std::string mode = "tcp";
+    for (size_t i = 0; i < results.size(); ++i)
+    {
+        const ScanOutcome &r = results[i];
+        switch (r.state)
+        {
+        case PortState::Open:
+            ++confirmed_open;
+            break;
+        case PortState::Closed:
+            ++closed_count;
+            break;
+        case PortState::Filtered:
+            ++filtered_count;
+            break;
+        case PortState::OpenFiltered:
+            ++ambiguous_udp;
+            break;
+        case PortState::Error:
+            ++error_count;
+            break;
+        }
 
-    
+        if (r.state == PortState::Closed)
+            continue;
 
-    if (argc > 1) {
-        std::string first_arg = argv[1];
-        if (first_arg == "-h" || first_arg == "--help") {
-            print_usage(argv[0]);
-            return 0;
-        }
-        if (argc < 4) {
-            std::clog << "[!] Error: Missing required arguments.\n";
-            print_usage(argv[0]);
-            return 1;
-        }
-        target_input = argv[1];
-        start_port = std::atoi(argv[2]);
-        end_port = std::atoi(argv[3]);
-        
-        if (argc >= 5) timeout_sec = std::atoi(argv[4]);
-        if (argc >= 6) {
-            std::string proto_arg = argv[5];
-            std::transform(proto_arg.begin(), proto_arg.end(), proto_arg.begin(), ::tolower);
-            if (proto_arg == "udp") mode = "udp";
-        }
+        const size_t ip_index = i / port_count;
+        const int port = static_cast<int>(start) +
+                         static_cast<int>(i % port_count);
+
+        std::cout << "  " << ips[ip_index] << ":" << port
+                  << "/" << protocol << " " << port_state_name(r.state);
+        if (!r.banner.empty())
+            std::cout << " | " << r.banner;
+        std::cout << "\n";
     }
 
-    if (start_port < 1 || end_port > 65535 || start_port > end_port) {
-        std::clog << "[!] Error: Invalid port range.\n";
+    std::cout << "[+] Results: total=" << results.size()
+              << ", open=" << confirmed_open
+              << ", closed=" << closed_count
+              << ", filtered=" << filtered_count
+              << ", open|filtered=" << ambiguous_udp
+              << ", errors=" << error_count << "\n";
+
+    if (!save_json_report(output, target, ips, static_cast<int>(start),
+                          port_count, protocol, results))
+    {
+        std::cerr << "[!] Could not write report: " << output << "\n";
         return 1;
     }
-
-    std::vector<std::string> target_ips = parse_cidr(target_input);
-    if (target_ips.empty()) return 1;
-
-    std::queue<ScanTask> task_queue;
-    for (const auto& ip : target_ips) {
-        for (int port = start_port; port <= end_port; ++port) {
-            task_queue.push({ip, port, mode});
-        }
-    }
-    int total_tasks = task_queue.size();
-
-    unsigned int num_threads = std::thread::hardware_concurrency();
-    if (num_threads == 0) num_threads = 4;
-
-    std::cout << "[*] Starting NetScout Scanner..." << std::endl;
-    std::cout << "[*] Target: " << target_input << " (" << target_ips.size() << " IPs)" << std::endl;
-    std::cout << "[*] Mode: " << (mode == "udp" ? "UDP (Connectionless)" : "TCP (Stateful)") << std::endl;
-    std::cout << "[*] Ports: " << start_port << " - " << end_port << std::endl;
-    std::cout << "[*] Pool Size: " << num_threads << " threads" << std::endl;
-    std::cout << "==================================================" << std::endl;
-
-    std::vector<PortResult> open_ports;
-    std::mutex result_mutex;
-    std::mutex queue_mutex;
-    std::atomic<int> progress_counter(0);
-
-    std::vector<std::thread> thread_pool;
-    for (size_t i = 0; i < num_threads; ++i) {
-        thread_pool.push_back(std::thread(pool_worker_thread, 
-                                          std::ref(task_queue), std::ref(queue_mutex),
-                                          timeout_sec, std::ref(open_ports), 
-                                          std::ref(result_mutex), std::ref(progress_counter)));
-    }
-
-    print_progress_bar(progress_counter, total_tasks);
-
-    for (auto& t : thread_pool) {
-        if (t.joinable()) t.join();
-    }
-
-    std::sort(open_ports.begin(), open_ports.end(), [](const PortResult& a, const PortResult& b) {
-        if (a.ip != b.ip) return a.ip < b.ip;
-        return a.port < b.port;
-    });
-
-    std::cout << "==================================================" << std::endl;
-    std::cout << "[+] Scan complete!" << std::endl;
-    
-    if (open_ports.empty()) {
-        std::cout << "[-] No open ports found." << std::endl;
-    } else {
-        std::cout << "[+] Found " << open_ports.size() << " open ports:" << std::endl;
-        for (const auto& res : open_ports) {
-            std::cout << "  -> [" << res.ip << "] Port " << res.port << "/" << res.protocol << " is OPEN";
-            if (!res.banner.empty()) std::cout << " | " << res.banner;
-            std::cout << std::endl;
-        }
-    }
-
-    std::cout << "==================================================" << std::endl;
-    save_json_report("report.json", target_input, open_ports);
-    std::cout << "[+] Report saved to report.json" << std::endl;
-
+    std::cout << "[+] Report written to " << output << "\n";
     return 0;
 }

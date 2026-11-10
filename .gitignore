@@ -5,6 +5,21 @@ web-api/netscout-api
 *.exe
 .vscode/
 .DS_Store
-report.json
 env
 .env
+
+# test binaries
+/tests/test_cidr
+
+# generated scan reports
+/report.json
+/*-test.json
+/tcp-*.json
+/udp-*.json
+/cidr-test.json
+
+# python test artifacts
+__pycache__/
+*.pyc
+# Local Go API reports
+/web-api/report.json
